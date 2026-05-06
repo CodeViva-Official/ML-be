@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from prompts.templates import QUESTION_GENERATION_PROMPT
+from prompts.templates import QUESTION_GENERATION_SYSTEM, QUESTION_GENERATION_USER
 from app.gemini_client import call_gemini
 
 router = APIRouter()
@@ -8,19 +8,26 @@ router = APIRouter()
 
 # ── 요청/응답 스키마 ──────────────────────────────────────────
 class GenerateQuestionsRequest(BaseModel):
-    submission_id: str   # 백엔드에서 과제 식별용으로 넘겨주는 ID
-    code: str            # 학생이 제출한 코드 전문
+    submission_id: str
+    code: str
 
 
-class QuestionItem(BaseModel):
-    id: int
-    question: str
-    intent: str
+class AnalysisResult(BaseModel):
+    purpose: str
+    key_concepts: list[str]
+    complexity: str  # simple | medium | complex
+
+
+class QuestionsResult(BaseModel):
+    q1: str
+    q2: str
+    q3: str
 
 
 class GenerateQuestionsResponse(BaseModel):
     submission_id: str
-    questions: list[QuestionItem]
+    analysis: AnalysisResult
+    questions: QuestionsResult
 
 
 # ── 라우터 ────────────────────────────────────────────────────
@@ -28,19 +35,23 @@ class GenerateQuestionsResponse(BaseModel):
 async def generate_questions(req: GenerateQuestionsRequest):
     """
     코드를 받아 Gemini로 검증 질문 3개 생성.
-    백엔드 서버가 이 엔드포인트를 호출하고, 응답을 DB에 저장 후 프론트에 전달.
+    프롬프트 1 사용. 코드 분석 결과 + 질문 3개를 반환.
     """
     if not req.code.strip():
         raise HTTPException(status_code=400, detail="코드가 비어있습니다.")
 
-    prompt = QUESTION_GENERATION_PROMPT.format(code=req.code)
+    user_prompt = QUESTION_GENERATION_USER.format(code=req.code)
 
     try:
-        result = await call_gemini(prompt)
+        result = await call_gemini(
+            user_prompt=user_prompt,
+            system_prompt=QUESTION_GENERATION_SYSTEM,
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini 호출 실패: {str(e)}")
 
     return GenerateQuestionsResponse(
         submission_id=req.submission_id,
+        analysis=result["analysis"],
         questions=result["questions"],
     )
