@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from prompts.templates import EVALUATION_SYSTEM, EVALUATION_USER
 from app.gemini_client import call_gemini
-from app.stt_service import transcribe_audio
+from app.stt_service import process_audio
 
 router = APIRouter()
 
@@ -11,7 +11,8 @@ router = APIRouter()
 class SingleEvalResponse(BaseModel):
     submission_id: str
     question_type: int          # 1, 2, 3
-    transcribed_text: str       # STT 결과
+    raw_stt: str                # Whisper 원본 텍스트
+    refined_text: str           # Qwen 보간 후 텍스트 (이걸로 채점)
     level: str                  # excellent | good | bad | miss
     accuracy: str
     depth: str
@@ -29,29 +30,30 @@ async def evaluate_answer(
 ):
     """
     질문 1개 + 음성 답변 1개를 받아서:
-    1. Whisper로 음성 → 텍스트
-    2. Gemini 프롬프트 2로 이해도 채점
-    3. 개별 결과 반환
-
-    프론트에서 Q1 답변 → 이 API 호출 (type=1)
-              Q2 답변 → 이 API 호출 (type=2)
-              Q3 답변 → 이 API 호출 (type=3)
+    1. faster-whisper로 음성 → 텍스트
+    2. Qwen으로 STT 텍스트 보간 (코드 용어 정제)
+    3. Gemini 프롬프트 2로 이해도 채점
+    4. 개별 결과 반환
     """
-    # ── 1. 음성 → 텍스트 (Whisper) ───────────────────────────
+    # ── 1. 음성 → STT → 보간 ─────────────────────────────────
     audio_bytes = await audio_file.read()
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="음성 파일이 비어있습니다.")
 
     try:
-        transcribed_text = transcribe_audio(audio_bytes, audio_file.filename or "audio.wav")
+        stt_result = process_audio(
+            audio_bytes=audio_bytes,
+            filename=audio_file.filename or "audio.wav",
+            submitted_code=code,
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"STT 변환 실패: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"STT/보간 처리 실패: {str(e)}")
 
-    # ── 2. Gemini 채점 ────────────────────────────────────────
+    # ── 2. Gemini 채점 (보간된 텍스트 사용) ───────────────────
     user_prompt = EVALUATION_USER.format(
         code=code,
         question=question,
-        answer=transcribed_text,
+        answer=stt_result["refined"],
     )
 
     try:
@@ -65,7 +67,8 @@ async def evaluate_answer(
     return SingleEvalResponse(
         submission_id=submission_id,
         question_type=question_type,
-        transcribed_text=transcribed_text,
+        raw_stt=stt_result["raw_stt"],
+        refined_text=stt_result["refined"],
         level=result.get("level", "miss"),
         accuracy=result.get("accuracy", ""),
         depth=result.get("depth", ""),
