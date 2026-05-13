@@ -25,7 +25,7 @@ async def call_gemini(user_prompt: str, system_prompt: str = None) -> dict:
         config["system_instruction"] = system_prompt
 
     response = _client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=user_prompt,
         config=config if config else None,
     )
