@@ -6,6 +6,7 @@ aiofiles==23.2.1
 pydantic
 pydantic-settings
 google-genai
+openai
 
 # STT
 faster-whisper

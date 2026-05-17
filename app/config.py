@@ -2,7 +2,14 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    GEMINI_API_KEY: str
+    # LLM 설정 — LLM_PROVIDER로 전환 가능
+    LLM_PROVIDER: str = "openai"  # "openai" 또는 "gemini"
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o"
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
+    # STT
     WHISPER_MODEL: str = "medium"  # faster-whisper 모델: tiny/base/small/medium/large-v3
 
     class Config:

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from prompts.templates import EVALUATION_SYSTEM, EVALUATION_USER
-from app.gemini_client import call_gemini
+from app.gemini_client import call_llm
 from app.stt_service import process_audio
 
 router = APIRouter()
@@ -57,12 +57,12 @@ async def evaluate_answer(
     )
 
     try:
-        result = await call_gemini(
+        result = await call_llm(
             user_prompt=user_prompt,
             system_prompt=EVALUATION_SYSTEM,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gemini 호출 실패: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"api 호출 실패: {str(e)}")
 
     return SingleEvalResponse(
         submission_id=submission_id,

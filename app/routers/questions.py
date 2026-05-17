@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from prompts.templates import QUESTION_GENERATION_SYSTEM, QUESTION_GENERATION_USER
-from app.gemini_client import call_gemini
+from app.gemini_client import call_llm
 
 router = APIRouter()
 
@@ -34,7 +34,7 @@ class GenerateQuestionsResponse(BaseModel):
 @router.post("/generate-questions", response_model=GenerateQuestionsResponse)
 async def generate_questions(req: GenerateQuestionsRequest):
     """
-    코드를 받아 Gemini로 검증 질문 3개 생성.
+    코드를 받아 ai로 검증 질문 3개 생성.
     프롬프트 1 사용. 코드 분석 결과 + 질문 3개를 반환.
     """
     if not req.code.strip():
@@ -43,12 +43,12 @@ async def generate_questions(req: GenerateQuestionsRequest):
     user_prompt = QUESTION_GENERATION_USER.format(code=req.code)
 
     try:
-        result = await call_gemini(
+        result = await call_llm(
             user_prompt=user_prompt,
             system_prompt=QUESTION_GENERATION_SYSTEM,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gemini 호출 실패: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"api 호출 실패: {str(e)}")
 
     return GenerateQuestionsResponse(
         submission_id=req.submission_id,
