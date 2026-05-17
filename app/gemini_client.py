@@ -1,6 +1,13 @@
 import json
 import re
+import asyncio
 from app.config import settings
+
+# 최대 재시도 횟수
+MAX_RETRIES = 3
+
+# 유효한 level 값
+VALID_LEVELS = {"excellent", "good", "bad", "miss"}
 
 
 def _parse_json_response(text: str) -> dict:
@@ -12,8 +19,47 @@ def _parse_json_response(text: str) -> dict:
     return json.loads(cleaned)
 
 
+def _validate_evaluation_response(result: dict) -> dict:
+    """
+    프롬프트 2 응답의 level 필드 검증.
+    이상한 값이 오면 기본값으로 교정.
+    """
+    if "level" in result:
+        level = result["level"].lower().strip()
+        if level not in VALID_LEVELS:
+            result["level"] = "miss"
+            result["summary"] = result.get("summary", "") + f" (원래 응답: {level}, miss로 교정됨)"
+        else:
+            result["level"] = level
+
+    # 필수 필드가 없으면 기본값
+    result.setdefault("level", "miss")
+    result.setdefault("accuracy", "응답 형식 오류")
+    result.setdefault("depth", "응답 형식 오류")
+    result.setdefault("summary", "응답 형식 오류로 miss 처리")
+
+    return result
+
+
+def _validate_questions_response(result: dict) -> dict:
+    """
+    프롬프트 1 응답의 필수 필드 검증.
+    """
+    if "questions" not in result:
+        raise ValueError("응답에 questions 필드가 없습니다")
+    if "analysis" not in result:
+        raise ValueError("응답에 analysis 필드가 없습니다")
+
+    q = result["questions"]
+    for key in ["q1", "q2", "q3"]:
+        if key not in q or not q[key].strip():
+            raise ValueError(f"응답에 {key} 질문이 비어있습니다")
+
+    return result
+
+
 # ── OpenAI ────────────────────────────────────────────────────
-async def _call_openai(user_prompt: str, system_prompt: str = None) -> dict:
+async def _call_openai(user_prompt: str, system_prompt: str = None) -> str:
     from openai import OpenAI
 
     client = OpenAI(api_key=settings.OPENAI_API_KEY)
@@ -29,11 +75,11 @@ async def _call_openai(user_prompt: str, system_prompt: str = None) -> dict:
         temperature=0.1,
     )
 
-    return _parse_json_response(response.choices[0].message.content)
+    return response.choices[0].message.content
 
 
 # ── Gemini ────────────────────────────────────────────────────
-async def _call_gemini(user_prompt: str, system_prompt: str = None) -> dict:
+async def _call_gemini(user_prompt: str, system_prompt: str = None) -> str:
     from google import genai
 
     client = genai.Client(api_key=settings.GEMINI_API_KEY)
@@ -48,18 +94,58 @@ async def _call_gemini(user_prompt: str, system_prompt: str = None) -> dict:
         config=config if config else None,
     )
 
-    return _parse_json_response(response.text)
+    return response.text
 
 
-# ── 통합 함수 (이것만 호출하면 됨) ────────────────────────────
-async def call_llm(user_prompt: str, system_prompt: str = None) -> dict:
+# ── 통합 함수 (재시도 + 검증 포함) ─────────────────────────────
+async def call_llm(
+    user_prompt: str,
+    system_prompt: str = None,
+    response_type: str = "evaluation",  # "evaluation" 또는 "questions"
+) -> dict:
     """
-    .env의 LLM_PROVIDER 값에 따라 OpenAI 또는 Gemini를 호출.
-    코드 다른 곳에서는 이 함수만 쓰면 됨.
+    LLM 호출 + JSON 파싱 + 검증.
+    실패 시 최대 3번 재시도.
+    
+    response_type:
+      "evaluation" → level 필드 검증
+      "questions"  → questions 필드 검증
     """
-    if settings.LLM_PROVIDER == "openai":
-        return await _call_openai(user_prompt, system_prompt)
-    elif settings.LLM_PROVIDER == "gemini":
-        return await _call_gemini(user_prompt, system_prompt)
-    else:
-        raise ValueError(f"지원하지 않는 LLM_PROVIDER: {settings.LLM_PROVIDER}")
+    last_error = None
+
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            # 1. LLM 호출
+            if settings.LLM_PROVIDER == "openai":
+                raw_text = await _call_openai(user_prompt, system_prompt)
+            elif settings.LLM_PROVIDER == "gemini":
+                raw_text = await _call_gemini(user_prompt, system_prompt)
+            else:
+                raise ValueError(f"지원하지 않는 LLM_PROVIDER: {settings.LLM_PROVIDER}")
+
+            # 2. JSON 파싱
+            result = _parse_json_response(raw_text)
+
+            # 3. 응답 검증
+            if response_type == "evaluation":
+                result = _validate_evaluation_response(result)
+            elif response_type == "questions":
+                result = _validate_questions_response(result)
+
+            return result
+
+        except json.JSONDecodeError as e:
+            last_error = f"JSON 파싱 실패 (시도 {attempt}/{MAX_RETRIES}): {str(e)}"
+            print(f"[LLM] {last_error}")
+        except ValueError as e:
+            last_error = f"응답 검증 실패 (시도 {attempt}/{MAX_RETRIES}): {str(e)}"
+            print(f"[LLM] {last_error}")
+        except Exception as e:
+            last_error = f"API 호출 실패 (시도 {attempt}/{MAX_RETRIES}): {str(e)}"
+            print(f"[LLM] {last_error}")
+
+        # 재시도 전 대기 (1초, 2초, 4초)
+        if attempt < MAX_RETRIES:
+            await asyncio.sleep(2 ** (attempt - 1))
+
+    raise Exception(f"LLM 호출 {MAX_RETRIES}번 실패: {last_error}")

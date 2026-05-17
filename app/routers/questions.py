@@ -46,9 +46,10 @@ async def generate_questions(req: GenerateQuestionsRequest):
         result = await call_llm(
             user_prompt=user_prompt,
             system_prompt=QUESTION_GENERATION_SYSTEM,
+            response_type="questions",
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"api 호출 실패: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"AI 호출 실패: {str(e)}")
 
     return GenerateQuestionsResponse(
         submission_id=req.submission_id,

@@ -32,7 +32,7 @@ async def evaluate_answer(
     질문 1개 + 음성 답변 1개를 받아서:
     1. faster-whisper로 음성 → 텍스트
     2. Qwen으로 STT 텍스트 보간 (코드 용어 정제)
-    3. Gemini 프롬프트 2로 이해도 채점
+    3. LLM 프롬프트 2로 이해도 채점
     4. 개별 결과 반환
     """
     # ── 1. 음성 → STT → 보간 ─────────────────────────────────
@@ -49,7 +49,7 @@ async def evaluate_answer(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"STT/보간 처리 실패: {str(e)}")
 
-    # ── 2. Gemini 채점 (보간된 텍스트 사용) ───────────────────
+    # ── 2. LLM 채점 (보간된 텍스트 사용) ───────────────────
     user_prompt = EVALUATION_USER.format(
         code=code,
         question=question,
@@ -60,9 +60,10 @@ async def evaluate_answer(
         result = await call_llm(
             user_prompt=user_prompt,
             system_prompt=EVALUATION_SYSTEM,
+            response_type="evaluation",
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"api 호출 실패: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"LLM 호출 실패: {str(e)}")
 
     return SingleEvalResponse(
         submission_id=submission_id,
