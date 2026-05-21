@@ -73,7 +73,7 @@ class BatchQuestionItem(BaseModel):
 
 
 class BatchEvaluateRequest(BaseModel):
-    questions: list[BatchQuestionItem]   # 반드시 3개
+    questions: list[BatchQuestionItem]   # 모든 학생의 답변 (제한 없음)
 
 
 class SingleResult(BaseModel):
@@ -93,12 +93,12 @@ class BatchEvaluateResponse(BaseModel):
 @router.post("/batch-evaluate", response_model=BatchEvaluateResponse)
 async def batch_evaluate(req: BatchEvaluateRequest):
     """
-    질문 3개 + 텍스트 답변 3개를 한번에 받아서 프롬프트 2로 채점.
-    3개를 동시에 LLM 호출 (비동기 병렬).
+    모든 학생의 답변을 한번에 받아서 프롬프트 2로 채점.
+    전부 동시에 LLM 호출 (비동기 병렬).
     프론트에서 "결과 보기" 버튼 누를 때 호출.
     """
-    if len(req.questions) != 3:
-        raise HTTPException(status_code=400, detail="질문은 정확히 3개여야 합니다.")
+    if len(req.questions) == 0:
+        raise HTTPException(status_code=400, detail="질문이 비어있습니다.")
 
     async def evaluate_single(q: BatchQuestionItem) -> SingleResult:
         user_prompt = EVALUATION_USER.format(
@@ -134,7 +134,7 @@ async def batch_evaluate(req: BatchEvaluateRequest):
             summary=result.get("summary", ""),
         )
 
-    # 3개 동시 호출 (비동기 병렬)
+    # 전부 동시 호출 (비동기 병렬)
     results = await asyncio.gather(
         *[evaluate_single(q) for q in req.questions]
     )
