@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from prompts.templates import EVALUATION_SYSTEM, EVALUATION_USER
 from app.gemini_client import call_llm
-from app.stt_service import transcribe_audio, refine_stt_text
+from app.stt_service import transcribe_audio
 
 router = APIRouter()
 
@@ -35,17 +35,15 @@ def remove_filler_tokens(text: str) -> str:
 # ── API 1: STT 전용 ──────────────────────────────────────────
 class SttResponse(BaseModel):
     raw_stt: str          # Whisper 원본
-    refined_text: str     # Qwen 보간 후
     cleaned_text: str     # 불필요 토큰 제거 후 (최종)
 
 
 @router.post("/stt", response_model=SttResponse)
 async def stt_only(
-    code: str = Form(...),
     audio_file: UploadFile = File(...),
 ):
     """
-    음성 → STT → Qwen 보간 → 불필요 토큰 제거 → 텍스트 반환.
+    음성 → STT → 불필요 토큰 제거 → 텍스트 반환.
     채점은 하지 않음. 프론트에서 텍스트를 보여주는 용도.
     """
     audio_bytes = await audio_file.read()
@@ -57,43 +55,38 @@ async def stt_only(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"STT 실패: {str(e)}")
 
-    try:
-        refined = refine_stt_text(raw_stt, code)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"보간 실패: {str(e)}")
-
-    cleaned = remove_filler_tokens(refined)
+    cleaned = remove_filler_tokens(raw_stt)
 
     return SttResponse(
         raw_stt=raw_stt,
-        refined_text=refined,
         cleaned_text=cleaned,
     )
 
 
 # ── API 2: 배치 채점 ─────────────────────────────────────────
-class BatchQuestion(BaseModel):
+class BatchQuestionItem(BaseModel):
+    submission_id: str
+    question_type: int       # 1, 2, 3
+    code: str
     question: str
-    answer_text: str     # STT → 정제 → 클리닝 완료된 텍스트
+    answer_text: str         # STT → 정제 → 클리닝 완료된 텍스트
 
 
 class BatchEvaluateRequest(BaseModel):
-    submission_id: str
-    code: str
-    questions: list[BatchQuestion]   # 반드시 3개
+    questions: list[BatchQuestionItem]   # 반드시 3개
 
 
 class SingleResult(BaseModel):
-    question: str
+    submission_id: str
+    question_type: int
     answer_text: str
-    level: str           # excellent | good | bad | miss
+    level: str               # excellent | good | bad | miss
     accuracy: str
     depth: str
     summary: str
 
 
 class BatchEvaluateResponse(BaseModel):
-    submission_id: str
     results: list[SingleResult]
 
 
@@ -107,9 +100,9 @@ async def batch_evaluate(req: BatchEvaluateRequest):
     if len(req.questions) != 3:
         raise HTTPException(status_code=400, detail="질문은 정확히 3개여야 합니다.")
 
-    async def evaluate_single(q: BatchQuestion) -> SingleResult:
+    async def evaluate_single(q: BatchQuestionItem) -> SingleResult:
         user_prompt = EVALUATION_USER.format(
-            code=req.code,
+            code=q.code,
             question=q.question,
             answer=q.answer_text,
         )
@@ -122,7 +115,8 @@ async def batch_evaluate(req: BatchEvaluateRequest):
             )
         except Exception as e:
             return SingleResult(
-                question=q.question,
+                submission_id=q.submission_id,
+                question_type=q.question_type,
                 answer_text=q.answer_text,
                 level="miss",
                 accuracy=f"채점 실패: {str(e)}",
@@ -131,7 +125,8 @@ async def batch_evaluate(req: BatchEvaluateRequest):
             )
 
         return SingleResult(
-            question=q.question,
+            submission_id=q.submission_id,
+            question_type=q.question_type,
             answer_text=q.answer_text,
             level=result.get("level", "miss"),
             accuracy=result.get("accuracy", ""),
@@ -145,6 +140,5 @@ async def batch_evaluate(req: BatchEvaluateRequest):
     )
 
     return BatchEvaluateResponse(
-        submission_id=req.submission_id,
         results=list(results),
     )
