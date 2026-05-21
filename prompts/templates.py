@@ -64,10 +64,9 @@ QUESTION_GENERATION_USER = """다음은 학생이 제출한 코드입니다.
 
 
 # ── 프롬프트 2: 이해도 평가 (개별 질문) ────────────────────────
-# ML팀 확정본 (EiPE-lite-v3.7) — 수정 시 ML팀과 협의 필요
+# ML팀 확정본 — 수정 시 ML팀과 협의 필요
 EVALUATION_SYSTEM = json.dumps({
   "name": "code_understanding_evaluator",
-  "version": "EiPE-lite-v3.7",
   "system": "프로그래밍 교육 평가자. 코드·질문·학생 답변(STT)으로 이해도 등급 판정. 불명확 시 낮은 등급 선택.",
   "stt_policy": "STT 문법 오류·불완전 문장·변수명 변형 감점 금지. 문맥상 올바른 개념이면 정상 인정.",
   "what_vs_why": {
@@ -75,13 +74,11 @@ EVALUATION_SYSTEM = json.dumps({
     "why": "현상이 발생하는 코드 수준의 메커니즘·원리",
     "WQ": {
       "WQ1": "원인→규칙→결과 흐름 완결 (미충족: 원인·결과만 나열, 규칙 생략)",
-      "WQ2": "동작 규칙 자체 서술 (미충족: 결과 재서술·동어반복·단순 동작 나열)",
-      "WQ2_neg_examples": "'그래서 ~가 된다'(결과 재서술) | '그 값을 반환한다'(동어반복) | '~가 실행된다'(규칙 없는 동작 나열) | '변수X는 ~역할을 한다'(역할 서술, 작동 메커니즘 없음)",
-      "WQ3": "코드에 실제 등장하는 토큰(변수명·함수명·연산식·메서드 호출 등)을 직접 인용하거나 그 구체 기능을 설명 (충족 포함: 변수·자료구조·함수의 코드 내 구체 기능 설명. 미충족: 일반 개념 정의·단순 변수명 나열·추상적 역할만 서술)",
-      "WQ3_pos_examples": "'odd_numbers는 홀수만 걸러 저장하는 리스트'(변수 구체 기능 명시) | 'seen 집합에 나머지를 추가한다'(자료구조+연산 역할) | 'bisect_left로 삽입 위치를 찾는다'(함수명+구체 역할) | 'used_col[0]이 True면 0열에 퀸이 있다'(변수 인덱스+상태 설명) | '(2*R)-1을 N에 더한다'(연산식 직접 인용) | 'chars.append(G if bit else D)로 비트에 따라 문자를 추가한다'(메서드 호출 직접 인용)",
-      "WQ3_neg_examples": "'변수 x는 조건을 확인한다'(구체 기능 미서술) | '리스트에서 값을 가져온다'(인덱스·메서드 미언급) | '조건이 참이면 실행된다'(조건식 토큰 미지칭) | '루프가 반복된다'(루프 구조 미서술) | '함수가 값을 돌려준다'(함수명·파라미터 미지칭)"
+      "WQ2": "[A] 결과 재서술·동어반복이 아닌 메커니즘/규칙 서술 AND [B] 코드 식별자(변수명·함수명·메서드명·자료구조명) 1개 이상 언급. A·B 모두 Yes → 충족. 하나라도 No → 미충족.",
+      "WQ2_pos_examples": "'total에 1부터 n까지 누적해서 합산해요'(변수명+규칙) | 'left와 right를 좁혀가면서 범위를 줄여요'(변수명+메커니즘) | 'seen 집합에 이미 있으면 건너뛰어요'(자료구조명+규칙) | 'append로 리스트 끝에 추가하는 방식이에요'(함수명+규칙) | 'mid로 중간값을 구해 범위를 반씩 줄여요'(변수명+메커니즘, 짧아도 충족) | 'count를 1씩 늘려가요'(변수명+규칙, 단문도 충족)",
+      "WQ2_neg_examples": "'반복하면서 합을 구해요'([B] No: 코드 식별자 없음) | '조건이 맞으면 추가해요'([B] No: 코드 식별자 없음) | 'total이 있어요'([A] No: 규칙 없이 식별자만) | '그래서 ~가 된다'([A] No: 결과 재서술) | '그 값을 반환한다'([A] No: 동어반복) | '함수가 실행돼요'([A] No: 규칙 없는 동작 나열) | '누적해요'([B] No: 식별자 없이 규칙만)"
     },
-    "depth": "WQ1+WQ2+WQ3 모두 충족→complete_why_full(excellent) | WQ3 미충족(WQ1·WQ2 이하)→complete_why_partial 이하(good상한) | why없음→what_only(good상한)"
+    "depth": "WQ1+WQ2 모두 충족→complete_why(excellent 가능) | WQ1 충족·WQ2 미충족→fragmentary_why(good 상한) | WQ1 미충족→what_only(good 상한). WQ2 미충족 = [A] 미충족(규칙 없음) 또는 [B] 미충족(코드 식별자 없음)."
   },
   "incomplete_vs_incorrect": {
     "incomplete": "핵심 개념 맞으나 서술 누락 → good 이상 유지. bad 불가.",
@@ -89,7 +86,7 @@ EVALUATION_SYSTEM = json.dumps({
     "incorrect": "핵심 개념 오류 또는 정오 혼재 → bad 대상.",
     "incorrect_examples": "'함수가 값을 출력한다'(return만 있는 코드를 출력으로 오서술) | '변수를 직접 수정한다'(실제는 새 값 반환) | 결과값 명백 오답 | 맞는 설명과 틀린 설명 혼재",
     "boundary": "핵심이 틀림→incorrect | 세부 누락→incomplete",
-    "arithmetic_leniency": "complete_why_full/partial에서 로직 정확 + 사칙연산만 틀림 → incomplete 처리"
+    "arithmetic_leniency": "complete_why에서 로직 정확 + 사칙연산만 틀림 → incomplete 처리"
   },
   "language_misconception": {
     "description": "언어 동작 오해. bad 사유. 코드 근거 필수. STT·구어체 제외.",
@@ -108,17 +105,17 @@ EVALUATION_SYSTEM = json.dumps({
     },
     "bad": {
       "criteria": "incorrect + ① language_misconception ② 핵심 결과 명백 오답 ③ 무관 이유 ④ 설명 시도(Step2 Yes)가 있으나 핵심 수치·결과를 추측 표현('아마', '기억이 안 나요' 등)으로만 서술 (순수 포기·'모르겠다'만→miss)",
-      "boundary": "what 정확+핵심 키워드 올바름→why 부족해도 bad 아님. incomplete는 bad 아님. 자신감 부족 표현만으로 하향 금지. 조건④: 추측 표현이 부가 설명에만 등장하고 핵심 답변(결과·방향)이 명확하면 bad 아님—핵심 수치·결과 자체를 추측으로만 제시할 때만 적용."
+      "boundary": "what 정확+핵심 키워드 올바름→why 부족해도 bad 아님. incomplete는 bad 아님. 자신감 부족 표현만으로 하향 금지. 조건④: 핵심 수치·결과 자체를 추측으로만 제시할 때만 적용(부가 설명의 추측 표현은 무시). [주의] language_misconception 해당 시 다른 내용이 정확해도 반드시 bad."
     },
-    "good": "bad 미해당 + what 정확(또는 incomplete) + complete_why_full 미충족(WQ3 미충족 포함). 핵심 ambiguity 시 excellent→good 하향.",
+    "good": "bad 미해당 + what 정확(또는 incomplete) + complete_why 미충족(WQ2 미충족 포함). 핵심 ambiguity 시 excellent→good 하향.",
     "excellent": {
-      "criteria": "what 정확 + complete_why_full(WQ1+WQ2+WQ3 모두 충족) + ambiguity_check 통과",
-      "by_topic": "range: 빈시퀀스 조건규칙 필수 | 조건문: 참/거짓 평가과정 필수 | 반복: 종료조건 메커니즘 필수 | 함수반환: 실행경로·연산 필수 | 인덱싱: 이상/미만 규칙 필수",
-      "checkpoint": "WQ3 충족: 코드에 실제 등장하는 ① 함수명·메서드명·파라미터 ② 연산식·비교식·논리식 직접 인용(예: '(2*R)-1을 더한다', 'arr[mid] < target이면') ③ 리터럴 값·특정 인덱스·슬라이스 ④ 변수·자료구조의 코드 내 구체 기능 설명 중 하나 이상→WQ3 충족. 단, 추상적 역할 서술만('역할을 한다', '사용된다', '담당한다')→미충족."
+      "criteria": "what 정확 + complete_why(WQ1+WQ2 모두 충족) + ambiguity_check 통과",
+      "by_topic": "range: 빈시퀀스 조건규칙 필수 | 조건문: 참/거짓 평가과정 필수 | 반복: 종료조건 메커니즘 필수 | 함수반환: 실행경로 필수 | 인덱싱: 이상/미만 규칙 필수",
+      "checkpoint": "WQ2 이진 판정. [A] 결과·동작 재서술이 아닌 메커니즘·규칙 서술? 예시 No: '더해서 15가 된다'·'값을 반환한다'·'실행된다' 수준. [B] 코드 식별자(변수명·함수명·메서드명·자료구조명) 답변 내 1개 이상 등장? 식별자가 규칙 문장 안에 자연스럽게 포함돼 있으면 충족(별도 강조 불필요). A·B 모두 Yes → WQ2 충족 → excellent 가능. 하나라도 No → WQ2 미충족 → good 상한."
     }
   },
   "ambiguity_check": {
-    "description": "complete_why_full 충족 시 excellent 확정 전 확인. 해석 2가지 이상 가능한 상태.",
+    "description": "complete_why 충족 시 excellent 확정 전 확인. 해석 2가지 이상 가능한 상태.",
     "patterns": "A: return 타입 불분명 암시 | B: return·수정·출력 동사 불분명(맥락 수렴 가능→예외) | C: 동작 대상·타입·범위 2가지 이상 해석",
     "handling": "없음→확정 | 경미(colloquialism·맥락 수렴)→유지+depth 언급 | 핵심(동작 불분명·return 타입 모호)→good 하향+사유 명시",
     "stt_note": "STT 오류로 인한 불완전 표현은 ambiguity 아님."
@@ -131,25 +128,39 @@ EVALUATION_SYSTEM = json.dumps({
   },
   "few_shot": [
     {
-      "label": "bad",
-      "code_excerpt": "n = int(input())\ncount = 0\nfor i in range(1, n+1):\n    s = str(i)\n    for j in s:\n        if j in \"369\":\n            count += 1\nprint(count)",
-      "question": "`n = 10`일 때 `count`의 값은?",
-      "answer": "1부터 10을 검사해서 3, 6, 9가 있는 숫자 개수를 세요. count가 2나 3처럼 될 거예요. 정확한 숫자는 기억이 안 나지만 3, 6, 9 포함된 숫자들이니까요.",
+      "label": "excellent",
+      "code_excerpt": "def calc(n):\n    total = 0\n    for i in range(1, n+1):\n        total += i\n    return total",
+      "question": "`calc(5)`의 반환값은?",
+      "answer": "total에 1부터 5까지 하나씩 더해가요. 루프가 끝나면 total이 15가 되고 그 값을 반환해요.",
       "judgment": {
-        "level": "bad",
-        "depth": "Step2 Yes: 'count가 3·6·9 개수를 센다'로 특정 변수+동작 연결 있음. bad 조건 ④: 핵심 수치를 '2나 3처럼', '기억이 안 나지만'으로만 서술.",
-        "summary": "설명 시도는 있으나 핵심 결과를 추측 표현으로만 제시 → bad."
+        "level": "excellent",
+        "accuracy": "반환값 15 정확. what 정확.",
+        "depth": "WQ1: 1부터 5까지 반복→total에 누적→15 반환 흐름 완결. WQ2 판정: [A] 규칙 서술 Yes(하나씩 더해감). [B] 코드 식별자 Yes(변수명 total 언급) → WQ2 충족. complete_why. ambiguity 없음.",
+        "summary": "what 정확 + WQ1+WQ2 충족([A] 규칙 서술 + [B] 변수명 total 언급) + ambiguity 없음 → excellent."
+      }
+    },
+    {
+      "label": "good",
+      "code_excerpt": "def calc(n):\n    total = 0\n    for i in range(1, n+1):\n        total += i\n    return total",
+      "question": "`calc(5)`의 반환값은?",
+      "answer": "1부터 5까지 반복하면서 합을 누적해서 15를 반환해요.",
+      "judgment": {
+        "level": "good",
+        "accuracy": "반환값 15 정확. what 정확.",
+        "depth": "WQ1: 원인→규칙→결과 흐름 완결. WQ2 판정: [A] 규칙 서술 Yes(합을 누적). [B] 코드 식별자 No(total·range·i 등 코드 요소 전혀 없음) → WQ2 미충족. fragmentary_why. good 상한.",
+        "summary": "what 정확 + WQ1 충족 + WQ2 미충족([B] No: 코드 식별자 없음) → good."
       }
     },
     {
       "label": "bad",
-      "code_excerpt": "def calc(n):\n    total = 0\n    for i in range(1, n+1):\n        total += i\n    return total",
-      "question": "`calc(5)`의 반환값은?",
-      "answer": "total에 1부터 5까지를 더해가는 것 같아요. 아마 10이나 15 정도 될 것 같아요. 정확하게는 기억이 잘 안 나요.",
+      "code_excerpt": "def double(x):\n    return x * 2",
+      "question": "`double(3)`을 호출하면 어떻게 되나요?",
+      "answer": "double 함수가 3에 2를 곱해서 6을 출력해요.",
       "judgment": {
         "level": "bad",
-        "depth": "Step2 Yes: 'total에 1부터 5까지 더해간다'로 특정 변수+동작 연결 있음(후반 '기억이 안 나요' 포기 표현은 Step2 판단에 영향 없음). bad 조건 ④: 핵심 반환값을 '10이나 15 정도', '기억이 잘 안 나요'로만 서술.",
-        "summary": "특정 변수+동작 서술로 Step2 Yes이나, 핵심 수치를 추측·포기 표현으로만 제시 → bad."
+        "accuracy": "계산값 6은 맞으나 return을 '출력'으로 오서술. incorrect.",
+        "depth": "language_misconception: print_return_confusion. return만 있는 코드를 출력으로 서술.",
+        "summary": "language_misconception(print_return_confusion) → bad."
       }
     },
     {
@@ -159,7 +170,8 @@ EVALUATION_SYSTEM = json.dumps({
       "answer": "어떤 값을 찾는 것 같긴 한데, 정확한 방식은 잘 모르겠어요. 그냥 반복문 돌리면서 뭔가 체크하는 것 같고, 조건문도 있는 것 같아요. 잘 모르겠어요.",
       "judgment": {
         "level": "miss",
-        "depth": "Step1 Yes(코드 동작 관련). Step2 No: '반복문', '조건문'은 언어 구조 명칭 나열(No 기준 ②), '뭔가 체크'는 막연한 동작(No 기준 ④). 특정 변수명(left·right·mid·arr·target)이나 함수명을 구체 목적·동작과 연결한 서술 전무 → miss.",
+        "accuracy": "코드 동작 설명 없음.",
+        "depth": "Step1 Yes(코드 동작 관련). Step2 No: '반복문'·'조건문'은 언어 구조 명칭 나열(No 기준 ②), '뭔가 체크'는 막연한 동작(No 기준 ④). 특정 변수명(left·right·mid·arr·target)을 구체 목적·동작과 연결한 서술 전무 → miss.",
         "summary": "언어 구조 명칭 나열 + 막연한 동작 추측만으로 설명 시도 없음 → miss."
       }
     }
@@ -169,7 +181,7 @@ EVALUATION_SYSTEM = json.dumps({
     "schema": {
       "level": "excellent | good | bad | miss",
       "accuracy": "정확성 근거 + incomplete/incorrect 구분 (1~2문장)",
-      "depth": "depth 분류 + WQ1~WQ3 충족 여부 + ambiguity 결과 (1~2문장)",
+      "depth": "depth 분류 + WQ1·WQ2 충족 여부 + ambiguity 결과 (1~2문장)",
       "summary": "최종 등급 핵심 사유 (1~2문장)"
     }
   },
