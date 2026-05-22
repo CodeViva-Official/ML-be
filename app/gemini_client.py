@@ -10,6 +10,30 @@ MAX_RETRIES = 3
 VALID_LEVELS = {"excellent", "good", "bad", "miss"}
 
 
+# ── 클라이언트 모듈 레벨 1회 생성 (lazy) ──────────────────────
+# 매 호출마다 새로 만들지 않도록 캐싱한다.
+# import 시점이 아니라 첫 호출 시점에 만들어서, 모듈 로드 때
+# OPENAI_API_KEY 가 없어도 죽지 않게 한다(batch_api 에서 겪었던 문제 회피).
+_openai_client = None
+_gemini_client = None
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    return _openai_client
+
+
+def _get_gemini_client():
+    global _gemini_client
+    if _gemini_client is None:
+        from google import genai
+        _gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    return _gemini_client
+
+
 def _parse_json_response(text: str) -> dict:
     """
     LLM이 가끔 ```json ... ``` 마크다운으로 감싸서 응답함.
@@ -60,16 +84,18 @@ def _validate_questions_response(result: dict) -> dict:
 
 # ── OpenAI ────────────────────────────────────────────────────
 async def _call_openai(user_prompt: str, system_prompt: str = None) -> str:
-    from openai import OpenAI
-
-    client = OpenAI(api_key=settings.OPENAI_API_KEY)
+    client = _get_openai_client()
 
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_prompt})
 
-    response = client.chat.completions.create(
+    # [핵심 수정] 동기 blocking 호출을 별도 스레드로 빼서
+    # 이벤트 루프를 막지 않게 한다. 이래야 asyncio.gather 의
+    # 동시 호출이 실제로 동시에 돌아간다(기존엔 순차 처리됨).
+    response = await asyncio.to_thread(
+        client.chat.completions.create,
         model=settings.OPENAI_MODEL,
         messages=messages,
         temperature=0.1,
@@ -80,15 +106,16 @@ async def _call_openai(user_prompt: str, system_prompt: str = None) -> str:
 
 # ── Gemini ────────────────────────────────────────────────────
 async def _call_gemini(user_prompt: str, system_prompt: str = None) -> str:
-    from google import genai
-
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    client = _get_gemini_client()
 
     config = {}
     if system_prompt:
         config["system_instruction"] = system_prompt
 
-    response = client.models.generate_content(
+    # [핵심 수정] Gemini SDK 의 generate_content 도 동기 blocking 이므로
+    # 동일하게 스레드로 빼서 이벤트 루프를 막지 않게 한다.
+    response = await asyncio.to_thread(
+        client.models.generate_content,
         model=settings.GEMINI_MODEL,
         contents=user_prompt,
         config=config if config else None,
@@ -106,7 +133,7 @@ async def call_llm(
     """
     LLM 호출 + JSON 파싱 + 검증.
     실패 시 최대 3번 재시도.
-    
+
     response_type:
       "evaluation" → level 필드 검증
       "questions"  → questions 필드 검증
