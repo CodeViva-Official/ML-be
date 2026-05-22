@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from app.routers import questions, evaluation, stt_and_batch
+from app.routers import questions, evaluation, stt_and_batch, batch_api
 
 app = FastAPI(
     title="CodeViva ML Server",
@@ -11,7 +11,7 @@ app = FastAPI(
 app.include_router(questions.router, prefix="/ml", tags=["질문 생성"])
 app.include_router(evaluation.router, prefix="/ml", tags=["답변 평가 (기존)"])
 app.include_router(stt_and_batch.router, prefix="/ml", tags=["STT + 배치 채점 (신규)"])
-
+app.include_router(batch_api.router, prefix="/ml", tags=["배치 채점(Batch API)"])
 
 @app.get("/health")
 def health_check():
