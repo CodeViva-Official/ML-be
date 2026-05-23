@@ -11,7 +11,12 @@ OpenAI Batch API 채점 라우터 (신규)
 
 핵심: custom_id = "{submission_id}__q{question_type}" 로 유일하게 부여.
       출력 순서가 입력과 달라도 custom_id로 매칭하므로 학생 id 순서 무관.
+
+answer_text: OpenAI 결과 파일에는 answer_text가 돌아오지 않으므로
+      submit 시점에 {custom_id: answer_text} 를 보관했다가 GET 때 합친다.
+      → 기존 /batch-evaluate 와 결과 필드를 일치시키기 위함.
 """
+
 import io
 import json
 from fastapi import APIRouter, HTTPException
@@ -27,12 +32,16 @@ client = OpenAI(api_key=settings.OPENAI_API_KEY)
 OPENAI_MODEL = settings.OPENAI_MODEL
 VALID_LEVELS = {"excellent", "good", "bad", "miss"}
 
+# ──────────────────────────────────────────────────────────────
+# answer_text 보관소 (batch_id → {custom_id: answer_text})
+#   [주의] 모듈 레벨 메모리 저장. 서버 재시작 시 사라진다.
+#   영속성이 필요하면 DB/Redis 로 교체할 것.
+#   백엔드 DB에 답변 원문이 이미 있다면, 이 보관소 대신
+#   결과의 submission_id+question_type 으로 백엔드에서 붙이는 게 더 견고하다.
+# ──────────────────────────────────────────────────────────────
+_answer_store: dict[str, dict[str, str]] = {}
 
-# ──────────────────────────────────────────────────────────────
-# custom_id 인코딩/디코딩
-#   submission_id 에 "__" 가 들어갈 일은 없다고 가정.
-#   혹시 모를 충돌 방지를 위해 question_type 을 뒤에 붙인다.
-# ──────────────────────────────────────────────────────────────
+
 def make_custom_id(submission_id: str, question_type: int) -> str:
     return f"{submission_id}__q{question_type}"
 
@@ -70,6 +79,7 @@ class BatchSubmitResponse(BaseModel):
 class SingleResult(BaseModel):
     submission_id: str
     question_type: int
+    answer_text: str          # 기존 /batch-evaluate 와 필드 일치
     level: str                # excellent | good | bad | miss
     accuracy: str
     depth: str
@@ -99,9 +109,10 @@ def batch_grade_submit(req: BatchSubmitRequest):
             detail="한 배치는 최대 50,000건까지 가능합니다. 나눠서 제출하세요.",
         )
 
-    # custom_id 중복 검사 (중복 시 결과 매칭 불가)
     seen = set()
     lines = []
+    answer_map: dict[str, str] = {}   # custom_id → answer_text 보관용
+
     for q in req.questions:
         cid = make_custom_id(q.submission_id, q.question_type)
         if cid in seen:
@@ -110,6 +121,7 @@ def batch_grade_submit(req: BatchSubmitRequest):
                 detail=f"custom_id 중복: {cid} (submission_id + question_type 조합은 유일해야 합니다)",
             )
         seen.add(cid)
+        answer_map[cid] = q.answer_text   # GET 때 합치기 위해 보관
 
         user_prompt = EVALUATION_USER.format(
             code=q.code,
@@ -135,12 +147,10 @@ def batch_grade_submit(req: BatchSubmitRequest):
     jsonl_bytes = ("\n".join(lines)).encode("utf-8")
 
     try:
-        # .jsonl 파일 업로드
         upload = client.files.create(
             file=io.BytesIO(jsonl_bytes),
             purpose="batch",
         )
-        # 배치 생성
         batch = client.batches.create(
             input_file_id=upload.id,
             endpoint="/v1/chat/completions",
@@ -149,6 +159,9 @@ def batch_grade_submit(req: BatchSubmitRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"배치 제출 실패: {str(e)}")
+
+    # 제출 성공 후 batch_id 기준으로 answer_text 보관
+    _answer_store[batch.id] = answer_map
 
     return BatchSubmitResponse(
         batch_id=batch.id,
@@ -172,7 +185,12 @@ def batch_grade_result(batch_id: str):
     failed = getattr(counts, "failed", 0) if counts else 0
     total = getattr(counts, "total", 0) if counts else 0
 
-    # 아직 끝나지 않은 상태 → 상태만 반환
+    # 보관해둔 answer_text 맵 (없으면 빈 dict → answer_text 는 "")
+    answer_map = _answer_store.get(batch_id, {})
+
+    def get_answer(cid: str) -> str:
+        return answer_map.get(cid, "")
+
     if batch.status != "completed":
         return BatchResultResponse(
             batch_id=batch_id,
@@ -196,7 +214,8 @@ def batch_grade_result(batch_id: str):
             if not line:
                 continue
             row = json.loads(line)
-            sid, qtype = parse_custom_id(row.get("custom_id", ""))
+            cid = row.get("custom_id", "")
+            sid, qtype = parse_custom_id(cid)
 
             try:
                 content = row["response"]["body"]["choices"][0]["message"]["content"]
@@ -207,16 +226,17 @@ def batch_grade_result(batch_id: str):
                 results.append(SingleResult(
                     submission_id=sid,
                     question_type=qtype,
+                    answer_text=get_answer(cid),
                     level=level,
                     accuracy=parsed.get("accuracy", ""),
                     depth=parsed.get("depth", ""),
                     summary=parsed.get("summary", ""),
                 ))
             except Exception:
-                # JSON 파싱 실패 등 → miss 처리
                 results.append(SingleResult(
                     submission_id=sid,
                     question_type=qtype,
+                    answer_text=get_answer(cid),
                     level="miss",
                     accuracy="응답 형식 오류",
                     depth="",
@@ -231,18 +251,20 @@ def batch_grade_result(batch_id: str):
                 if not line:
                     continue
                 row = json.loads(line)
-                sid, qtype = parse_custom_id(row.get("custom_id", ""))
+                cid = row.get("custom_id", "")
+                sid, qtype = parse_custom_id(cid)
                 err = row.get("error") or {}
                 results.append(SingleResult(
                     submission_id=sid,
                     question_type=qtype,
+                    answer_text=get_answer(cid),
                     level="miss",
                     accuracy=f"채점 실패: {err.get('code', 'unknown')}",
                     depth="",
                     summary=err.get("message", "배치 처리 실패로 miss"),
                 ))
         except Exception:
-            pass  # 에러 파일 파싱 실패는 무시 (정상 결과는 이미 반환)
+            pass
 
     return BatchResultResponse(
         batch_id=batch_id,
