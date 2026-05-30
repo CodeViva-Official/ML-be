@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from prompts.templates import QUESTION_GENERATION_SYSTEM, QUESTION_GENERATION_USER
-from app.gemini_client import call_llm
-
+# from app.gemini_client import call_llm
+from app.exaone_client import call_llm
 router = APIRouter()
 
 

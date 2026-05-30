@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 uvicorn.log
 nohup.out
+/model/*
+model/
+tests/
+/tests/*

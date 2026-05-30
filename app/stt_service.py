@@ -25,7 +25,7 @@ def get_whisper_model():
 # ── Qwen 보간 모델 (서버 시작 시 1회 로딩) ─────────────────────
 _qwen_tokenizer = None
 _qwen_model = None
-QWEN_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"  # 7B + bitsandbytes 4bit, 약 5GB VRAM
+QWEN_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 
 
 def get_qwen_model():
