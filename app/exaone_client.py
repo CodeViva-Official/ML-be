@@ -80,6 +80,19 @@ def _load():
     return _tokenizer, _model
 
 
+def _unwrap_json_string(text: str) -> str:
+    """모델이 JSON 오브젝트를 문자열로 한 번 더 감쌌을 때 (\"{\\\\"...\\\\"}\") 벗겨냄."""
+    stripped = text.strip()
+    if stripped.startswith('"') and stripped.endswith('"'):
+        try:
+            inner = json.loads(stripped)
+            if isinstance(inner, str) and inner.strip().startswith("{"):
+                return inner
+        except json.JSONDecodeError:
+            pass
+    return text
+
+
 def _get_prompt1_schema() -> dict:
     global _PROMPT1_SCHEMA
     if _PROMPT1_SCHEMA is None:
@@ -174,7 +187,7 @@ async def call_llm(
             )
 
             if response_type == "questions":
-                result, err = validate_or_error(raw)
+                result, err = validate_or_error(_unwrap_json_string(raw))
                 if err:
                     last_error = err.detail
                     print(f"[EXAONE] {err.kind} (시도 {attempt}/{MAX_RETRIES}): {err.detail}")
