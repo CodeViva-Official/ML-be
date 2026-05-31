@@ -19,17 +19,14 @@ gemini_client.call_llm 과 동일 시그니처/반환형 -> 라우터는 import�
 
 import asyncio
 import json
-import re
 import traceback
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
 
-from app.gemini_client import (
-    _validate_questions_response,
-    _validate_evaluation_response,
-)
+from app.gemini_client import _validate_evaluation_response
+from scripts.prompt1_schema import validate_or_error, export_json_schema
 
 BASE_MODEL = "/mnt/data/sungwonnoh/model/exaone-7b-base"
 ADAPTER_PATH = "/mnt/data/sungwonnoh/model/exaone-7b-stage3"
@@ -39,6 +36,8 @@ MAX_RETRIES = 3
 
 _tokenizer = None
 _model = None
+_PROMPT1_SCHEMA: dict = None
+_prefix_fn_cache: dict = {}   # id(tokenizer) → fn | None
 
 
 def _inject_embedding_accessors(model):
@@ -62,8 +61,6 @@ def _load():
     global _tokenizer, _model
     if _model is None:
         print(f"[EXAONE] 베이스 로딩 중(bf16): {BASE_MODEL}")
-        # GPU(20GB)가 비어있으므로 bitsandbytes 4bit 없이 bf16 로 올림(~16GB).
-        # -> bitsandbytes CPU 폴백 문제 원천 차단, GPU 추론 정상 속도.
         _tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, trust_remote_code=True)
         base = AutoModelForCausalLM.from_pretrained(
             BASE_MODEL,
@@ -83,21 +80,39 @@ def _load():
     return _tokenizer, _model
 
 
-def _extract_json(text: str) -> dict:
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    # 앞뒤 군더더기 대비: 첫 { ~ 마지막 }
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start != -1 and end != -1:
-            return json.loads(text[start:end + 1])
-        raise
+def _get_prompt1_schema() -> dict:
+    global _PROMPT1_SCHEMA
+    if _PROMPT1_SCHEMA is None:
+        _PROMPT1_SCHEMA = export_json_schema()
+    return _PROMPT1_SCHEMA
 
 
-def _generate_sync(system_prompt: str, user_prompt: str, sample: bool) -> str:
+def _build_prefix_fn(tokenizer):
+    """lm-format-enforcer prefix_fn 을 토크나이저당 1회 빌드 후 캐싱."""
+    tid = id(tokenizer)
+    if tid not in _prefix_fn_cache:
+        try:
+            from lmformatenforcer import JsonSchemaParser
+            from lmformatenforcer.integrations.transformers import (
+                build_transformers_prefix_allowed_tokens_fn,
+            )
+            fn = build_transformers_prefix_allowed_tokens_fn(
+                tokenizer, JsonSchemaParser(_get_prompt1_schema())
+            )
+            _prefix_fn_cache[tid] = fn
+            print("[EXAONE] lm-format-enforcer prefix_fn 준비 완료 (grammar 강제 ON)")
+        except ImportError:
+            print("[EXAONE] lm-format-enforcer 미설치 — 자유 디코딩으로 동작 (parse_rate 하락 가능)")
+            _prefix_fn_cache[tid] = None
+    return _prefix_fn_cache[tid]
+
+
+def _generate_sync(
+    system_prompt: str,
+    user_prompt: str,
+    sample: bool,
+    constrain_json: bool = False,
+) -> str:
     tokenizer, model = _load()
 
     messages = []
@@ -126,6 +141,11 @@ def _generate_sync(system_prompt: str, user_prompt: str, sample: bool) -> str:
     else:
         gen_kwargs.update(do_sample=False, temperature=None, top_p=None)
 
+    if constrain_json:
+        prefix_fn = _build_prefix_fn(tokenizer)
+        if prefix_fn is not None:
+            gen_kwargs["prefix_allowed_tokens_fn"] = prefix_fn
+
     with torch.no_grad():
         out = model.generate(**inputs, **gen_kwargs)
     decoded = tokenizer.decode(
@@ -141,24 +161,46 @@ async def call_llm(
 ) -> dict:
     """gemini_client.call_llm 과 동일 시그니처. 호출 + 파싱 + 검증 + 재시도."""
     last_error = None
+    current_user_prompt = user_prompt
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             raw = await asyncio.to_thread(
-                _generate_sync, system_prompt, user_prompt, attempt > 1
+                _generate_sync,
+                system_prompt,
+                current_user_prompt,
+                attempt > 1,
+                response_type == "questions",
             )
-            result = _extract_json(raw)
 
             if response_type == "questions":
-                result = _validate_questions_response(result)
-            elif response_type == "evaluation":
-                result = _validate_evaluation_response(result)
+                result, err = validate_or_error(raw)
+                if err:
+                    last_error = err.detail
+                    print(f"[EXAONE] {err.kind} (시도 {attempt}/{MAX_RETRIES}): {err.detail}")
+                    print(f"[EXAONE] raw (500c): {raw[:500]!r}")
+                    if attempt < MAX_RETRIES:
+                        current_user_prompt = err.to_retry_message()
+                    continue
+                return result.model_dump()
 
-            return result
+            # evaluation 등 나머지 타입
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                start, end = raw.find("{"), raw.rfind("}")
+                if start != -1 and end != -1:
+                    parsed = json.loads(raw[start:end + 1])
+                else:
+                    raise
+            if response_type == "evaluation":
+                parsed = _validate_evaluation_response(parsed)
+            return parsed
 
         except json.JSONDecodeError as e:
             last_error = f"JSON 파싱 실패 (시도 {attempt}/{MAX_RETRIES}): {e}"
             print(f"[EXAONE] {last_error}")
+            print(f"[EXAONE] raw (500c): {raw[:500]!r}")
         except ValueError as e:
             last_error = f"응답 검증 실패 (시도 {attempt}/{MAX_RETRIES}): {e}"
             print(f"[EXAONE] {last_error}")
