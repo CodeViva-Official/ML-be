@@ -193,7 +193,7 @@ async def call_llm(
                     print(f"[EXAONE] {err.kind} (시도 {attempt}/{MAX_RETRIES}): {err.detail}")
                     print(f"[EXAONE] raw (500c): {raw[:500]!r}")
                     if attempt < MAX_RETRIES:
-                        current_user_prompt = err.to_retry_message()
+                        current_user_prompt = err.to_retry_message() + "\n\n" + user_prompt
                     continue
                 return result.model_dump()
 
