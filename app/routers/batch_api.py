@@ -140,7 +140,7 @@ def batch_grade_submit(req: BatchSubmitRequest):
                     {"role": "user", "content": user_prompt},
                 ],
                 "response_format": {"type": "json_object"},
-                "max_tokens": 500,
+                "max_completion_tokens": 500,
             },
         }, ensure_ascii=False))
 

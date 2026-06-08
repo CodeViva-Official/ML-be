@@ -98,7 +98,6 @@ async def _call_openai(user_prompt: str, system_prompt: str = None) -> str:
         client.chat.completions.create,
         model=settings.OPENAI_MODEL,
         messages=messages,
-        temperature=0.1,
     )
 
     return response.choices[0].message.content
